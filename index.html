@@ -34,7 +34,6 @@ const ctx    = canvas.getContext('2d');
 canvas.width  = W;
 canvas.height = H;
 
-// Scale canvas to fit window while keeping aspect ratio
 function resize() {
   const scale = Math.min(window.innerWidth / W, window.innerHeight / H);
   canvas.style.width  = Math.floor(W * scale) + 'px';
@@ -51,139 +50,235 @@ window.addEventListener('keydown', e => {
     e.preventDefault();
 });
 window.addEventListener('keyup', e => keys.delete(e.code));
-const isLeft  = () => keys.has('ArrowLeft')  || keys.has('KeyA');
-const isRight = () => keys.has('ArrowRight') || keys.has('KeyD');
-const isJump  = () => keys.has('Space') || keys.has('ArrowUp') || keys.has('KeyW');
 
-// ─── Player ──────────────────────────────────────────────────
-const player = {
-  x: W / 2,
-  y: GROUND_Y,
-  vx: 0, vy: 0,
-  w: PW, h: PH,
-  onGround: false,
-  coyote: 0,
-  jumpBuffer: 0,
-  facingRight: true,
+const isLeft    = () => keys.has('ArrowLeft')  || keys.has('KeyA');
+const isRight   = () => keys.has('ArrowRight') || keys.has('KeyD');
+const isJump    = () => keys.has('ArrowUp')    || keys.has('KeyW');   // Space is now attack
+const isAttack  = () => keys.has('Space')      || keys.has('KeyZ');
+const isRestart = () => keys.has('KeyR');
 
-  update(dt) {
-    // Horizontal
-    const dx = (isRight() ? 1 : 0) - (isLeft() ? 1 : 0);
-    if (dx !== 0) this.facingRight = dx > 0;
-    this.vx = dx * MOVE_SPEED;
+// ─── Helpers ─────────────────────────────────────────────────
+function rectsOverlap(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x
+      && a.y < b.y + b.h && a.y + a.h > b.y;
+}
 
-    // Jump buffering
-    if (isJump()) this.jumpBuffer = JUMP_BUFFER;
-    this.jumpBuffer = Math.max(0, this.jumpBuffer - dt);
+// ─── Player factory (called on restart too) ──────────────────
+function makePlayer() {
+  return {
+    x: W / 2, y: GROUND_Y,
+    vx: 0, vy: 0,
+    w: PW, h: PH,
+    onGround: false,
+    coyote: 0,
+    jumpBuffer: 0,
+    facingRight: true,
 
-    // Coyote time
-    if (this.onGround) this.coyote = COYOTE_TIME;
-    else               this.coyote = Math.max(0, this.coyote - dt);
+    hp: 4, maxHp: 4,
+    iframes: 0,       // invincibility seconds after being hit
+    dead: false,
 
-    // Execute jump
-    if (this.jumpBuffer > 0 && this.coyote > 0) {
-      this.vy         = JUMP_VEL;
-      this.coyote     = 0;
-      this.jumpBuffer = 0;
+    attacking: false,
+    attackTimer: 0,
+    attackCooldown: 0,
+    attackHitSet: new Set(),  // enemies already hit this swing
+
+    ATTACK_ACTIVE: 0.16,  // window where the hitbox is live
+    ATTACK_TOTAL:  0.24,  // full animation length
+    ATTACK_CD:     0.32,  // cooldown between attacks
+
+    rect() {
+      return { x: this.x - this.w / 2, y: this.y - this.h, w: this.w, h: this.h };
+    },
+
+    // Hitbox that extends in facing direction during active frames
+    attackRect() {
+      if (!this.attacking) return null;
+      // Hitbox live during first ATTACK_ACTIVE of the animation
+      if (this.attackTimer < this.ATTACK_TOTAL - this.ATTACK_ACTIVE) return null;
+      const aw = 70, ah = 32;
+      const ax = this.facingRight
+        ? this.x + this.w / 2 - 4
+        : this.x - this.w / 2 - aw + 4;
+      const ay = this.y - this.h * 0.78;
+      return { x: ax, y: ay, w: aw, h: ah };
+    },
+
+    takeDamage(dmg) {
+      if (this.iframes > 0 || this.dead) return;
+      this.hp = Math.max(0, this.hp - dmg);
+      this.iframes = 0.75;
+      if (this.hp <= 0) this.dead = true;
+    },
+
+    update(dt) {
+      if (this.dead) return;
+
+      this.iframes      = Math.max(0, this.iframes - dt);
+      this.attackCooldown = Math.max(0, this.attackCooldown - dt);
+
+      // Trigger attack
+      if (isAttack() && !this.attacking && this.attackCooldown <= 0) {
+        this.attacking    = true;
+        this.attackTimer  = this.ATTACK_TOTAL;
+        this.attackHitSet = new Set();
+      }
+
+      // Tick attack animation
+      if (this.attacking) {
+        this.attackTimer -= dt;
+        if (this.attackTimer <= 0) {
+          this.attacking      = false;
+          this.attackCooldown = this.ATTACK_CD;
+        }
+      }
+
+      // Horizontal movement
+      const dx = (isRight() ? 1 : 0) - (isLeft() ? 1 : 0);
+      if (dx !== 0) this.facingRight = dx > 0;
+      this.vx = dx * MOVE_SPEED;
+
+      // Jump buffering
+      if (isJump()) this.jumpBuffer = JUMP_BUFFER;
+      this.jumpBuffer = Math.max(0, this.jumpBuffer - dt);
+
+      // Coyote time
+      if (this.onGround) this.coyote = COYOTE_TIME;
+      else               this.coyote = Math.max(0, this.coyote - dt);
+
+      // Execute jump
+      if (this.jumpBuffer > 0 && this.coyote > 0) {
+        this.vy         = JUMP_VEL;
+        this.coyote     = 0;
+        this.jumpBuffer = 0;
+      }
+
+      // Short-hop: release early = lower arc
+      if (!isJump() && this.vy < 0) this.vy += GRAVITY * 0.6 * dt;
+
+      this.vy += GRAVITY * dt;
+      this.x  += this.vx * dt;
+      this.y  += this.vy * dt;
+
+      // Floor
+      this.onGround = false;
+      if (this.y >= GROUND_Y) {
+        this.y        = GROUND_Y;
+        this.vy       = 0;
+        this.onGround = true;
+      }
+
+      // Wall clamp
+      if (this.x < this.w / 2)     this.x = this.w / 2;
+      if (this.x > W - this.w / 2) this.x = W - this.w / 2;
+    },
+
+    draw() {
+      if (this.dead) return;
+      // Blink during iframes
+      if (this.iframes > 0 && Math.floor(this.iframes * 12) % 2 === 0) return;
+
+      const bx = Math.round(this.x - this.w / 2);
+      const by = Math.round(this.y - this.h);
+
+      // Draw attack hitbox
+      const ar = this.attackRect();
+      if (ar) {
+        ctx.fillStyle   = 'rgba(255,220,0,0.28)';
+        ctx.fillRect(ar.x, ar.y, ar.w, ar.h);
+        ctx.strokeStyle = 'rgba(255,180,0,0.85)';
+        ctx.lineWidth   = 2;
+        ctx.strokeRect(ar.x, ar.y, ar.w, ar.h);
+      }
+
+      // Body
+      ctx.fillStyle   = this.attacking ? '#ffe020' : '#f0d848';
+      ctx.fillRect(bx, by, this.w, this.h);
+      ctx.strokeStyle = '#b89010';
+      ctx.lineWidth   = 2;
+      ctx.strokeRect(bx, by, this.w, this.h);
+
+      // Eye (tracks facing direction)
+      const eyeOffX = this.facingRight ? this.w - 10 : 6;
+      ctx.fillStyle = '#222';
+      ctx.fillRect(bx + eyeOffX, by + 10, 6, 8);
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(bx + eyeOffX + 1, by + 11, 2, 2);
     }
-
-    // Variable jump height
-    if (!isJump() && this.vy < 0) this.vy += GRAVITY * 0.6 * dt;
-
-    // Gravity
-    this.vy += GRAVITY * dt;
-
-    // Integrate
-    this.x += this.vx * dt;
-    this.y += this.vy * dt;
-
-    // Ground
-    this.onGround = false;
-    if (this.y >= GROUND_Y) {
-      this.y = GROUND_Y;
-      this.vy = 0;
-      this.onGround = true;
-    }
-
-    // Wall clamp (never leave the screen)
-    if (this.x < this.w / 2)       this.x = this.w / 2;
-    if (this.x > W - this.w / 2)   this.x = W - this.w / 2;
-  },
-
-  draw() {
-    const x = Math.round(this.x - this.w / 2);
-    const y = Math.round(this.y - this.h);
-
-    // Body block
-    ctx.fillStyle = '#f0d848';
-    ctx.fillRect(x, y, this.w, this.h);
-
-    // Outline
-    ctx.strokeStyle = '#b89010';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(x, y, this.w, this.h);
-
-    // Simple eye (facing direction)
-    const eyeOffX = this.facingRight ? this.w - 10 : 6;
-    ctx.fillStyle = '#222';
-    ctx.fillRect(x + eyeOffX, y + 10, 6, 8);
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(x + eyeOffX + 1, y + 11, 2, 2);
-  }
-};
+  };
+}
 
 // ─── Enemy ───────────────────────────────────────────────────
-const ENEMY_SPEED     = 110;
-const ATTACK_RANGE    = 90;   // px, stop and telegraph
-const WINDUP_TIME     = 0.55; // telegraph duration
-const ATTACK_DURATION = 0.18; // lunge duration
-const COOLDOWN_TIME   = 1.1;  // rest after attack
+const ENEMY_SPEED  = 110;
+const ATTACK_RANGE = 90;
+const WINDUP_TIME  = 0.55;
+const ATTACK_DUR   = 0.20;
+const COOLDOWN_T   = 1.2;
 
 class Enemy {
   constructor(startX) {
-    this.x = startX;
-    this.y = GROUND_Y;
-    this.w = 40;
-    this.h = 50;
-    this.state = 'CHASE'; // CHASE | WINDUP | ATTACK | COOLDOWN
-    this.timer = 0;
+    this.x          = startX;
+    this.y          = GROUND_Y;
+    this.w          = 40;
+    this.h          = 50;
+    this.hp         = 3;
+    this.maxHp      = 3;
+    this.state      = 'CHASE';
+    this.timer      = 0;
+    this.lockedDir  = 1;    // direction locked at windup start
     this.lungeFromX = startX;
     this.lungeToX   = startX;
+    this.hitFlash   = 0;
+    this.dead       = false;
+    this.hasHitPlayer = false; // only deal damage once per attack swing
+  }
+
+  rect() {
+    return { x: this.x - this.w / 2, y: this.y - this.h, w: this.w, h: this.h };
+  }
+
+  takeDamage(dmg) {
+    this.hp       = Math.max(0, this.hp - dmg);
+    this.hitFlash = 0.12;
+    if (this.hp <= 0) this.dead = true;
   }
 
   update(dt) {
+    if (this.dead) return;
+    this.hitFlash = Math.max(0, this.hitFlash - dt);
+
     const dist = Math.abs(this.x - player.x);
     const dir  = player.x > this.x ? 1 : -1;
 
     switch (this.state) {
       case 'CHASE':
         if (dist < ATTACK_RANGE) {
-          this.state = 'WINDUP';
-          this.timer = WINDUP_TIME;
+          this.state     = 'WINDUP';
+          this.timer     = WINDUP_TIME;
+          this.lockedDir = dir;   // lock direction NOW — won't track player after this
         } else {
           this.x += dir * ENEMY_SPEED * dt;
         }
         break;
 
       case 'WINDUP':
-        // Stand still, telegraph
         this.timer -= dt;
         if (this.timer <= 0) {
-          this.state      = 'ATTACK';
-          this.timer      = ATTACK_DURATION;
-          this.lungeFromX = this.x;
-          this.lungeToX   = this.x + dir * 70;
+          this.state        = 'ATTACK';
+          this.timer        = ATTACK_DUR;
+          this.lungeFromX   = this.x;
+          this.lungeToX     = this.x + this.lockedDir * 75;
+          this.hasHitPlayer = false;
         }
         break;
 
       case 'ATTACK': {
         this.timer -= dt;
-        const t = 1 - (this.timer / ATTACK_DURATION);
-        // Fast lunge, then snap back a bit
-        this.x = this.lungeFromX + (this.lungeToX - this.lungeFromX) * Math.min(t * 2.5, 1);
+        const t  = 1 - (this.timer / ATTACK_DUR);
+        this.x   = this.lungeFromX + (this.lungeToX - this.lungeFromX) * Math.min(t * 2.5, 1);
         if (this.timer <= 0) {
           this.state = 'COOLDOWN';
-          this.timer = COOLDOWN_TIME;
+          this.timer = COOLDOWN_T;
         }
         break;
       }
@@ -194,27 +289,27 @@ class Enemy {
         break;
     }
 
-    // Screen clamp
     if (this.x < this.w / 2)     this.x = this.w / 2;
     if (this.x > W - this.w / 2) this.x = W - this.w / 2;
   }
 
   draw() {
+    if (this.dead) return;
+
     const x = Math.round(this.x - this.w / 2);
     const y = Math.round(this.y - this.h);
 
-    // Color by state
     const colors = {
       CHASE:    '#c0392b',
-      WINDUP:   '#e67e22',   // orange telegraph
-      ATTACK:   '#ff2222',
+      WINDUP:   '#e67e22',
+      ATTACK:   '#ff3333',
       COOLDOWN: '#6e1515',
     };
-    ctx.fillStyle = colors[this.state] || '#c0392b';
-    ctx.fillRect(x, y, this.w, this.h);
 
+    ctx.fillStyle = this.hitFlash > 0 ? '#ffffff' : (colors[this.state] || '#c0392b');
+    ctx.fillRect(x, y, this.w, this.h);
     ctx.strokeStyle = '#5a0000';
-    ctx.lineWidth = 2;
+    ctx.lineWidth   = 2;
     ctx.strokeRect(x, y, this.w, this.h);
 
     // Eyes
@@ -225,47 +320,113 @@ class Enemy {
     ctx.fillRect(x + 10, y + 13, 4, 6);
     ctx.fillRect(x + 28, y + 13, 4, 6);
 
-    // Windup indicator: exclamation mark above head
+    // ! above head during windup
     if (this.state === 'WINDUP') {
-      ctx.fillStyle = '#ffe000';
-      ctx.font = 'bold 22px monospace';
-      ctx.textAlign = 'center';
+      ctx.fillStyle   = '#ffe000';
+      ctx.font        = 'bold 22px monospace';
+      ctx.textAlign   = 'center';
       ctx.fillText('!', this.x, y - 6);
-      ctx.textAlign = 'left';
+      ctx.textAlign   = 'left';
     }
 
-    // State label (debug feel)
-    ctx.fillStyle = 'rgba(255,255,255,0.55)';
-    ctx.font = '11px monospace';
-    ctx.textAlign = 'center';
-    ctx.fillText(this.state, this.x, y - (this.state === 'WINDUP' ? 30 : 8));
-    ctx.textAlign = 'left';
+    // HP bar
+    const bx = x, by = y - 10, bw = this.w, bh = 4;
+    ctx.fillStyle = '#400';
+    ctx.fillRect(bx, by, bw, bh);
+    ctx.fillStyle = '#e00';
+    ctx.fillRect(bx, by, bw * (this.hp / this.maxHp), bh);
   }
 }
 
-const enemies = [new Enemy(W * 0.78)];
+// ─── Game state ──────────────────────────────────────────────
+let player  = makePlayer();
+let enemies = [new Enemy(W * 0.78)];
+let restartConsumed = false;
 
-// ─── Background ──────────────────────────────────────────────
+function restart() {
+  player  = makePlayer();
+  enemies = [new Enemy(W * 0.78)];
+}
+
+// ─── Collision resolution ─────────────────────────────────────
+function resolveCollisions() {
+  const ar = player.attackRect();
+
+  for (const enemy of enemies) {
+    if (enemy.dead) continue;
+
+    // Player's attack hits enemy
+    if (ar && !player.attackHitSet.has(enemy) && rectsOverlap(ar, enemy.rect())) {
+      enemy.takeDamage(1);
+      player.attackHitSet.add(enemy);
+    }
+
+    // Enemy ATTACK lunge hits player (one hit per swing)
+    if (enemy.state === 'ATTACK' && !enemy.hasHitPlayer) {
+      if (rectsOverlap(enemy.rect(), player.rect())) {
+        player.takeDamage(1);
+        enemy.hasHitPlayer = true;
+      }
+    }
+    if (enemy.state !== 'ATTACK') enemy.hasHitPlayer = false;
+  }
+
+  // Remove dead enemies
+  enemies = enemies.filter(e => !e.dead);
+}
+
+// ─── Drawing ─────────────────────────────────────────────────
 function drawBackground() {
   ctx.fillStyle = '#131f13';
   ctx.fillRect(0, 0, W, H);
 }
 
 function drawGround() {
-  // Dirt
   ctx.fillStyle = '#2e4a1e';
   ctx.fillRect(0, GROUND_Y, W, H - GROUND_Y);
-  // Grass edge
   ctx.fillStyle = '#4e7a2e';
   ctx.fillRect(0, GROUND_Y, W, 5);
 }
 
 function drawHUD() {
+  // HP display
   ctx.fillStyle = 'rgba(0,0,0,0.55)';
-  ctx.fillRect(10, 10, 290, 30);
-  ctx.fillStyle = '#d0eea0';
-  ctx.font = '13px monospace';
-  ctx.fillText('WASD / Arrows = move    Space / W = jump', 16, 30);
+  ctx.fillRect(10, 10, 158, 38);
+
+  const sz = 24, pad = 5;
+  for (let i = 0; i < player.maxHp; i++) {
+    const hx = 16 + i * (sz + pad);
+    const hy = 17;
+    ctx.fillStyle   = i < player.hp ? '#dd2222' : '#2a2a2a';
+    ctx.fillRect(hx, hy, sz, sz);
+    ctx.strokeStyle = i < player.hp ? '#ff7777' : '#444';
+    ctx.lineWidth   = 1.5;
+    ctx.strokeRect(hx, hy, sz, sz);
+  }
+
+  // Controls
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(W - 320, 10, 310, 30);
+  ctx.fillStyle = '#b0d880';
+  ctx.font      = '12px monospace';
+  ctx.fillText('WASD/Arrows = move   W/Up = jump   Space = attack', W - 314, 30);
+}
+
+function drawDeathScreen() {
+  ctx.fillStyle = 'rgba(0,0,0,0.70)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = 'center';
+
+  ctx.fillStyle = '#cc1111';
+  ctx.font      = 'bold 88px monospace';
+  ctx.fillText('YOU DIED', W / 2, H / 2 - 20);
+
+  ctx.fillStyle = '#a0c870';
+  ctx.font      = '26px monospace';
+  ctx.fillText('Press R to try again', W / 2, H / 2 + 50);
+
+  ctx.textAlign = 'left';
 }
 
 // ─── Loop ────────────────────────────────────────────────────
@@ -275,14 +436,30 @@ function loop(ts) {
   const dt = last == null ? 0 : Math.min((ts - last) / 1000, 0.05);
   last = ts;
 
-  player.update(dt);
-  for (const e of enemies) e.update(dt);
+  const gameOver = player.dead;
+
+  if (!gameOver) {
+    player.update(dt);
+    for (const e of enemies) e.update(dt);
+    resolveCollisions();
+  }
+
+  // Restart (require releasing R first so it doesn't immediately re-die)
+  if (isRestart()) {
+    if (!restartConsumed && gameOver) {
+      restart();
+      restartConsumed = true;
+    }
+  } else {
+    restartConsumed = false;
+  }
 
   drawBackground();
   drawGround();
   for (const e of enemies) e.draw();
   player.draw();
   drawHUD();
+  if (gameOver) drawDeathScreen();
 
   requestAnimationFrame(loop);
 }
