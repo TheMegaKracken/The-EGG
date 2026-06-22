@@ -5,13 +5,7 @@
   <title>The EGG</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      background: #0a0f0a;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 100vh;
-    }
+    body { background: #0a0f0a; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
     canvas { display: block; }
   </style>
 </head>
@@ -26,7 +20,8 @@ const MOVE_SPEED  = 280;
 const JUMP_VEL    = -620;
 const COYOTE_TIME = 0.10;
 const JUMP_BUFFER = 0.12;
-const PW = 36, PH = 44;
+const PW = 36, PH = 44;         // hitbox
+const SPR_W = 74, SPR_H = 82;   // visual display size
 
 // ─── Canvas ──────────────────────────────────────────────────
 const canvas = document.getElementById('game');
@@ -35,9 +30,9 @@ canvas.width  = W;
 canvas.height = H;
 
 function resize() {
-  const scale = Math.min(window.innerWidth / W, window.innerHeight / H);
-  canvas.style.width  = Math.floor(W * scale) + 'px';
-  canvas.style.height = Math.floor(H * scale) + 'px';
+  const s = Math.min(window.innerWidth / W, window.innerHeight / H);
+  canvas.style.width  = Math.floor(W * s) + 'px';
+  canvas.style.height = Math.floor(H * s) + 'px';
 }
 window.addEventListener('resize', resize);
 resize();
@@ -50,58 +45,294 @@ window.addEventListener('keydown', e => {
     e.preventDefault();
 });
 window.addEventListener('keyup', e => keys.delete(e.code));
-
 const isLeft    = () => keys.has('ArrowLeft')  || keys.has('KeyA');
 const isRight   = () => keys.has('ArrowRight') || keys.has('KeyD');
-const isJump    = () => keys.has('ArrowUp')    || keys.has('KeyW');   // Space is now attack
+const isJump    = () => keys.has('ArrowUp')    || keys.has('KeyW');
 const isAttack  = () => keys.has('Space')      || keys.has('KeyZ');
 const isRestart = () => keys.has('KeyR');
 
-// ─── Helpers ─────────────────────────────────────────────────
 function rectsOverlap(a, b) {
   return a.x < b.x + b.w && a.x + a.w > b.x
       && a.y < b.y + b.h && a.y + a.h > b.y;
 }
 
-// ─── Player factory (called on restart too) ──────────────────
+// ─── Sprite Loading ──────────────────────────────────────────
+// Drop files in assets/sprites/ — game picks them up on load.
+const sheets = {};
+const SHEET_DEFS = {
+  idle:     { src: 'assets/sprites/forest_idle.png',                cols: 1, rows: 1 },
+  walkJump: { src: 'assets/sprites/forest_walking_and_jumping.png', cols: 4, rows: 2 },
+};
+
+function tryLoadSprites(onDone) {
+  let pending = Object.keys(SHEET_DEFS).length;
+  function finish() { if (--pending === 0) onDone(); }
+  for (const [key, def] of Object.entries(SHEET_DEFS)) {
+    const img = new Image();
+    img.onload  = () => { sheets[key] = img; finish(); };
+    img.onerror = finish;
+    img.src = def.src;
+  }
+}
+
+// Returns true if the sprite was drawn, false → use canvas fallback.
+function drawSprite(key, row, col, cx, cy, flipX) {
+  const img = sheets[key];
+  if (!img) return false;
+  const def = SHEET_DEFS[key];
+  const fw  = img.naturalWidth  / def.cols;
+  const fh  = img.naturalHeight / def.rows;
+  const dx  = -SPR_W / 2;
+  const dy  = -SPR_H;
+  ctx.save();
+  ctx.translate(cx, cy);
+  if (flipX) ctx.scale(-1, 1);
+  ctx.drawImage(img, col * fw, row * fh, fw, fh, dx, dy, SPR_W, SPR_H);
+  ctx.restore();
+  return true;
+}
+
+// ─── Canvas Fallback Character ───────────────────────────────
+// Matches the sprite aesthetic: dark stone egg, green moss, peach eye+feet.
+
+function drawSideEye(ex, ey) {
+  // Peach background patch
+  ctx.beginPath();
+  ctx.ellipse(ex, ey + 5, 14, 12, 0, 0, Math.PI * 2);
+  ctx.fillStyle = '#e0b46a';
+  ctx.fill();
+  // White of eye
+  ctx.beginPath();
+  ctx.ellipse(ex + 1, ey, 10, 9, 0, 0, Math.PI * 2);
+  ctx.fillStyle = '#f0ece4';
+  ctx.fill();
+  ctx.strokeStyle = '#1a1a1a';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  // Pupil
+  ctx.beginPath();
+  ctx.arc(ex + 2, ey + 1, 5.5, 0, Math.PI * 2);
+  ctx.fillStyle = '#111';
+  ctx.fill();
+  // Gleam
+  ctx.beginPath();
+  ctx.arc(ex, ey - 1.5, 2, 0, Math.PI * 2);
+  ctx.fillStyle = '#fff';
+  ctx.fill();
+  // Droopy eyelid (clip to eye circle, fill top portion dark)
+  ctx.save();
+  ctx.beginPath();
+  ctx.ellipse(ex + 1, ey, 10, 9, 0, 0, Math.PI * 2);
+  ctx.clip();
+  ctx.beginPath();
+  ctx.ellipse(ex + 1, ey - 7, 12, 8, 0, 0, Math.PI * 2);
+  ctx.fillStyle = '#3a3b3c';
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawFrontEyes(bw) {
+  for (const ex of [-11, 11]) {
+    // Peach patch
+    ctx.beginPath();
+    ctx.ellipse(ex, 5, 12, 10, 0, 0, Math.PI * 2);
+    ctx.fillStyle = '#e0b46a';
+    ctx.fill();
+    // White
+    ctx.beginPath();
+    ctx.ellipse(ex, 0, 8.5, 8.5, 0, 0, Math.PI * 2);
+    ctx.fillStyle = '#f0ece4';
+    ctx.fill();
+    ctx.strokeStyle = '#1a1a1a';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    // Pupil
+    ctx.beginPath();
+    ctx.arc(ex + 0.5, 0.5, 5, 0, Math.PI * 2);
+    ctx.fillStyle = '#111';
+    ctx.fill();
+    // Gleam
+    ctx.beginPath();
+    ctx.arc(ex - 1, -1.5, 1.8, 0, Math.PI * 2);
+    ctx.fillStyle = '#fff';
+    ctx.fill();
+  }
+  // Beak between eyes
+  ctx.beginPath();
+  ctx.ellipse(0, 15, 7, 5, 0, 0, Math.PI * 2);
+  ctx.fillStyle = '#c89850';
+  ctx.fill();
+  ctx.strokeStyle = '#7a5010';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+}
+
+function drawEggCanvas(cx, cy, facingRight, animState, walkFrame, vy) {
+  const idle = animState === 'idle';
+
+  // Animation transforms
+  let tilt = 0, bsx = 1, bsy = 1;
+  let lfY = 0, rfY = 0; // foot vertical offsets
+
+  if (animState === 'walk') {
+    const tilts = [0, 0.07, 0, -0.07];
+    const lf    = [0, -5,   0,  3];
+    const rf    = [0,  3,   0, -5];
+    tilt = tilts[walkFrame];
+    lfY  = lf[walkFrame];
+    rfY  = rf[walkFrame];
+  } else if (animState === 'jump') {
+    if      (vy < -80)  { bsy = 1.12; bsx = 0.90; }  // stretch on rise
+    else if (vy >  200) { bsy = 0.92; bsx = 1.08; }  // squish on fall
+  }
+
+  const bw = SPR_W * 0.44;
+  const bh = SPR_H * 0.45;
+
+  // ── Body ─────────────────────────────────────────────────
+  ctx.save();
+  ctx.translate(cx, cy - SPR_H * 0.5 + 4);
+  if (!idle && !facingRight) ctx.scale(-1, 1);
+  ctx.rotate(tilt);
+  ctx.scale(bsx, bsy);
+
+  // Body fill
+  ctx.beginPath();
+  ctx.ellipse(0, 0, bw, bh, 0, 0, Math.PI * 2);
+  ctx.fillStyle = '#3c3d3e';
+  ctx.fill();
+
+  // Stone-crack details
+  ctx.strokeStyle = 'rgba(0,0,0,0.45)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(-2, -bh * 0.65);
+  ctx.bezierCurveTo(-2, -bh * 0.2, 5, bh * 0.1, 2, bh * 0.6);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(-bw * 0.55, -bh * 0.1);
+  ctx.bezierCurveTo(-bw * 0.35, bh * 0.05, -bw * 0.58, bh * 0.25, -bw * 0.3, bh * 0.5);
+  ctx.stroke();
+
+  // Body outline
+  ctx.beginPath();
+  ctx.ellipse(0, 0, bw, bh, 0, 0, Math.PI * 2);
+  ctx.strokeStyle = '#111';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  // Green mossy patches
+  const moss = [
+    { x: -14, y: -18, rx: 9,  ry: 5,  a: -0.3 },
+    { x:  11, y:   4, rx: 7,  ry: 4.5, a:  0.2 },
+    { x:  -5, y:  19, rx: 8,  ry: 5,  a:  0.05 },
+    { x:   4, y: -25, rx: 5,  ry: 3,  a: -0.15 },
+    { x: -21, y:   7, rx: 5,  ry: 3,  a:  0.4  },
+  ];
+  for (const p of moss) {
+    ctx.beginPath();
+    ctx.ellipse(p.x, p.y, p.rx, p.ry, p.a, 0, Math.PI * 2);
+    ctx.fillStyle = '#4a6a22';
+    ctx.fill();
+    ctx.strokeStyle = '#2a4a0e';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
+  // Face
+  if (idle) {
+    drawFrontEyes(bw);
+  } else {
+    drawSideEye(9, -8);
+    // Beak
+    ctx.beginPath();
+    ctx.ellipse(6, 10, 6, 5, 0.1, 0, Math.PI * 2);
+    ctx.fillStyle = '#c89850';
+    ctx.fill();
+    ctx.strokeStyle = '#7a5010';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    // Staff / rod appendage on side
+    ctx.strokeStyle = '#222';
+    ctx.lineWidth = 3.5;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(bw * 0.85, -bh * 0.18);
+    ctx.lineTo(bw * 0.85,  bh * 0.44);
+    ctx.stroke();
+    ctx.lineCap = 'butt';
+  }
+
+  ctx.restore();
+
+  // ── Feet ─────────────────────────────────────────────────
+  ctx.save();
+  ctx.translate(cx, cy);
+  if (!idle && !facingRight) ctx.scale(-1, 1);
+
+  const footPairs = idle
+    ? [[-11, -3, 8, 5], [11, -3, 8, 5]]
+    : [[-10, lfY - 3, 7.5, 4.5], [9, rfY - 3, 7, 4.5]];
+
+  for (const [fx, fy, frx, fry] of footPairs) {
+    ctx.beginPath();
+    ctx.ellipse(fx, fy, frx, fry, 0, 0, Math.PI * 2);
+    ctx.fillStyle = '#c89850';
+    ctx.fill();
+    ctx.strokeStyle = '#7a5010';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// ─── Player ──────────────────────────────────────────────────
 function makePlayer() {
   return {
     x: W / 2, y: GROUND_Y,
     vx: 0, vy: 0,
     w: PW, h: PH,
     onGround: false,
-    coyote: 0,
-    jumpBuffer: 0,
+    coyote: 0, jumpBuffer: 0,
     facingRight: true,
 
     hp: 4, maxHp: 4,
-    iframes: 0,       // invincibility seconds after being hit
+    iframes: 0,
     dead: false,
 
-    attacking: false,
-    attackTimer: 0,
-    attackCooldown: 0,
-    attackHitSet: new Set(),  // enemies already hit this swing
+    attacking: false, attackTimer: 0, attackCooldown: 0,
+    attackHitSet: new Set(),
+    ATTACK_ACTIVE: 0.16, ATTACK_TOTAL: 0.24, ATTACK_CD: 0.32,
 
-    ATTACK_ACTIVE: 0.16,  // window where the hitbox is live
-    ATTACK_TOTAL:  0.24,  // full animation length
-    ATTACK_CD:     0.32,  // cooldown between attacks
+    // Animation
+    walkFrame: 0, walkTimer: 0,
+    WALK_FPS: 8,
 
-    rect() {
-      return { x: this.x - this.w / 2, y: this.y - this.h, w: this.w, h: this.h };
-    },
+    rect() { return { x: this.x - this.w/2, y: this.y - this.h, w: this.w, h: this.h }; },
 
-    // Hitbox that extends in facing direction during active frames
     attackRect() {
       if (!this.attacking) return null;
-      // Hitbox live during first ATTACK_ACTIVE of the animation
       if (this.attackTimer < this.ATTACK_TOTAL - this.ATTACK_ACTIVE) return null;
       const aw = 70, ah = 32;
-      const ax = this.facingRight
-        ? this.x + this.w / 2 - 4
-        : this.x - this.w / 2 - aw + 4;
-      const ay = this.y - this.h * 0.78;
-      return { x: ax, y: ay, w: aw, h: ah };
+      const ax = this.facingRight ? this.x + this.w/2 - 4 : this.x - this.w/2 - aw + 4;
+      return { x: ax, y: this.y - this.h * 0.78, w: aw, h: ah };
+    },
+
+    getAnimFrame() {
+      if (!this.onGround) {
+        if (this.vy < -80)  return { sheet: 'walkJump', row: 1, col: 0 }; // rise
+        if (this.vy <  80)  return { sheet: 'walkJump', row: 1, col: 1 }; // peak
+        return                     { sheet: 'walkJump', row: 1, col: 2 }; // fall
+      }
+      if (Math.abs(this.vx) > 20)
+        return { sheet: 'walkJump', row: 0, col: this.walkFrame };
+      return { sheet: 'idle', row: 0, col: 0 };
+    },
+
+    getAnimState() {
+      if (!this.onGround)           return 'jump';
+      if (Math.abs(this.vx) > 20)   return 'walk';
+      return 'idle';
     },
 
     takeDamage(dmg) {
@@ -114,96 +345,79 @@ function makePlayer() {
     update(dt) {
       if (this.dead) return;
 
-      this.iframes      = Math.max(0, this.iframes - dt);
+      this.iframes       = Math.max(0, this.iframes - dt);
       this.attackCooldown = Math.max(0, this.attackCooldown - dt);
 
-      // Trigger attack
       if (isAttack() && !this.attacking && this.attackCooldown <= 0) {
         this.attacking    = true;
         this.attackTimer  = this.ATTACK_TOTAL;
         this.attackHitSet = new Set();
       }
-
-      // Tick attack animation
       if (this.attacking) {
         this.attackTimer -= dt;
         if (this.attackTimer <= 0) {
-          this.attacking      = false;
-          this.attackCooldown = this.ATTACK_CD;
+          this.attacking       = false;
+          this.attackCooldown  = this.ATTACK_CD;
         }
       }
 
-      // Horizontal movement
       const dx = (isRight() ? 1 : 0) - (isLeft() ? 1 : 0);
       if (dx !== 0) this.facingRight = dx > 0;
       this.vx = dx * MOVE_SPEED;
 
-      // Jump buffering
       if (isJump()) this.jumpBuffer = JUMP_BUFFER;
       this.jumpBuffer = Math.max(0, this.jumpBuffer - dt);
-
-      // Coyote time
       if (this.onGround) this.coyote = COYOTE_TIME;
       else               this.coyote = Math.max(0, this.coyote - dt);
 
-      // Execute jump
       if (this.jumpBuffer > 0 && this.coyote > 0) {
-        this.vy         = JUMP_VEL;
-        this.coyote     = 0;
-        this.jumpBuffer = 0;
+        this.vy = JUMP_VEL; this.coyote = 0; this.jumpBuffer = 0;
       }
-
-      // Short-hop: release early = lower arc
       if (!isJump() && this.vy < 0) this.vy += GRAVITY * 0.6 * dt;
-
       this.vy += GRAVITY * dt;
       this.x  += this.vx * dt;
       this.y  += this.vy * dt;
 
-      // Floor
       this.onGround = false;
-      if (this.y >= GROUND_Y) {
-        this.y        = GROUND_Y;
-        this.vy       = 0;
-        this.onGround = true;
-      }
+      if (this.y >= GROUND_Y) { this.y = GROUND_Y; this.vy = 0; this.onGround = true; }
+      if (this.x < this.w/2)       this.x = this.w/2;
+      if (this.x > W - this.w/2)   this.x = W - this.w/2;
 
-      // Wall clamp
-      if (this.x < this.w / 2)     this.x = this.w / 2;
-      if (this.x > W - this.w / 2) this.x = W - this.w / 2;
+      // Walk frame cycle
+      if (this.onGround && Math.abs(this.vx) > 20) {
+        this.walkTimer += dt;
+        if (this.walkTimer >= 1 / this.WALK_FPS) {
+          this.walkTimer = 0;
+          this.walkFrame = (this.walkFrame + 1) % 4;
+        }
+      } else if (this.onGround) {
+        this.walkFrame = 0; this.walkTimer = 0;
+      }
     },
 
     draw() {
       if (this.dead) return;
-      // Blink during iframes
       if (this.iframes > 0 && Math.floor(this.iframes * 12) % 2 === 0) return;
 
-      const bx = Math.round(this.x - this.w / 2);
-      const by = Math.round(this.y - this.h);
+      const cx = Math.round(this.x);
+      const cy = Math.round(this.y);
 
-      // Draw attack hitbox
+      // Attack hitbox glow
       const ar = this.attackRect();
       if (ar) {
-        ctx.fillStyle   = 'rgba(255,220,0,0.28)';
+        ctx.fillStyle   = 'rgba(255,220,60,0.22)';
         ctx.fillRect(ar.x, ar.y, ar.w, ar.h);
-        ctx.strokeStyle = 'rgba(255,180,0,0.85)';
+        ctx.strokeStyle = 'rgba(255,180,0,0.8)';
         ctx.lineWidth   = 2;
         ctx.strokeRect(ar.x, ar.y, ar.w, ar.h);
       }
 
-      // Body
-      ctx.fillStyle   = this.attacking ? '#ffe020' : '#f0d848';
-      ctx.fillRect(bx, by, this.w, this.h);
-      ctx.strokeStyle = '#b89010';
-      ctx.lineWidth   = 2;
-      ctx.strokeRect(bx, by, this.w, this.h);
-
-      // Eye (tracks facing direction)
-      const eyeOffX = this.facingRight ? this.w - 10 : 6;
-      ctx.fillStyle = '#222';
-      ctx.fillRect(bx + eyeOffX, by + 10, 6, 8);
-      ctx.fillStyle = '#fff';
-      ctx.fillRect(bx + eyeOffX + 1, by + 11, 2, 2);
+      // Try sprite first, fall back to canvas drawing
+      const f = this.getAnimFrame();
+      const usedSprite = drawSprite(f.sheet, f.row, f.col, cx, cy, !this.facingRight);
+      if (!usedSprite) {
+        drawEggCanvas(cx, cy, this.facingRight, this.getAnimState(), this.walkFrame, this.vy);
+      }
     }
   };
 }
@@ -217,124 +431,76 @@ const COOLDOWN_T   = 1.2;
 
 class Enemy {
   constructor(startX) {
-    this.x          = startX;
-    this.y          = GROUND_Y;
-    this.w          = 40;
-    this.h          = 50;
-    this.hp         = 3;
-    this.maxHp      = 3;
-    this.state      = 'CHASE';
-    this.timer      = 0;
-    this.lockedDir  = 1;    // direction locked at windup start
-    this.lungeFromX = startX;
-    this.lungeToX   = startX;
-    this.hitFlash   = 0;
-    this.dead       = false;
-    this.hasHitPlayer = false; // only deal damage once per attack swing
+    this.x = startX; this.y = GROUND_Y;
+    this.w = 40; this.h = 50;
+    this.hp = 3; this.maxHp = 3;
+    this.state = 'CHASE'; this.timer = 0;
+    this.lockedDir = 1;
+    this.lungeFromX = startX; this.lungeToX = startX;
+    this.hitFlash = 0; this.dead = false; this.hasHitPlayer = false;
   }
-
-  rect() {
-    return { x: this.x - this.w / 2, y: this.y - this.h, w: this.w, h: this.h };
-  }
-
+  rect() { return { x: this.x - this.w/2, y: this.y - this.h, w: this.w, h: this.h }; }
   takeDamage(dmg) {
-    this.hp       = Math.max(0, this.hp - dmg);
+    this.hp = Math.max(0, this.hp - dmg);
     this.hitFlash = 0.12;
     if (this.hp <= 0) this.dead = true;
   }
-
   update(dt) {
     if (this.dead) return;
     this.hitFlash = Math.max(0, this.hitFlash - dt);
-
     const dist = Math.abs(this.x - player.x);
     const dir  = player.x > this.x ? 1 : -1;
-
     switch (this.state) {
       case 'CHASE':
         if (dist < ATTACK_RANGE) {
-          this.state     = 'WINDUP';
-          this.timer     = WINDUP_TIME;
-          this.lockedDir = dir;   // lock direction NOW — won't track player after this
-        } else {
-          this.x += dir * ENEMY_SPEED * dt;
-        }
+          this.state = 'WINDUP'; this.timer = WINDUP_TIME; this.lockedDir = dir;
+        } else { this.x += dir * ENEMY_SPEED * dt; }
         break;
-
       case 'WINDUP':
         this.timer -= dt;
         if (this.timer <= 0) {
-          this.state        = 'ATTACK';
-          this.timer        = ATTACK_DUR;
-          this.lungeFromX   = this.x;
-          this.lungeToX     = this.x + this.lockedDir * 75;
+          this.state = 'ATTACK'; this.timer = ATTACK_DUR;
+          this.lungeFromX = this.x; this.lungeToX = this.x + this.lockedDir * 75;
           this.hasHitPlayer = false;
         }
         break;
-
       case 'ATTACK': {
         this.timer -= dt;
-        const t  = 1 - (this.timer / ATTACK_DUR);
-        this.x   = this.lungeFromX + (this.lungeToX - this.lungeFromX) * Math.min(t * 2.5, 1);
-        if (this.timer <= 0) {
-          this.state = 'COOLDOWN';
-          this.timer = COOLDOWN_T;
-        }
+        const t = 1 - (this.timer / ATTACK_DUR);
+        this.x = this.lungeFromX + (this.lungeToX - this.lungeFromX) * Math.min(t * 2.5, 1);
+        if (this.timer <= 0) { this.state = 'COOLDOWN'; this.timer = COOLDOWN_T; }
         break;
       }
-
       case 'COOLDOWN':
         this.timer -= dt;
         if (this.timer <= 0) this.state = 'CHASE';
         break;
     }
-
-    if (this.x < this.w / 2)     this.x = this.w / 2;
-    if (this.x > W - this.w / 2) this.x = W - this.w / 2;
+    if (this.x < this.w/2)     this.x = this.w/2;
+    if (this.x > W - this.w/2) this.x = W - this.w/2;
   }
-
   draw() {
     if (this.dead) return;
-
-    const x = Math.round(this.x - this.w / 2);
+    const x = Math.round(this.x - this.w/2);
     const y = Math.round(this.y - this.h);
-
-    const colors = {
-      CHASE:    '#c0392b',
-      WINDUP:   '#e67e22',
-      ATTACK:   '#ff3333',
-      COOLDOWN: '#6e1515',
-    };
-
-    ctx.fillStyle = this.hitFlash > 0 ? '#ffffff' : (colors[this.state] || '#c0392b');
+    const colors = { CHASE:'#c0392b', WINDUP:'#e67e22', ATTACK:'#ff3333', COOLDOWN:'#6e1515' };
+    ctx.fillStyle   = this.hitFlash > 0 ? '#fff' : colors[this.state];
     ctx.fillRect(x, y, this.w, this.h);
-    ctx.strokeStyle = '#5a0000';
-    ctx.lineWidth   = 2;
+    ctx.strokeStyle = '#5a0000'; ctx.lineWidth = 2;
     ctx.strokeRect(x, y, this.w, this.h);
-
-    // Eyes
     ctx.fillStyle = '#fff';
-    ctx.fillRect(x + 7,  y + 10, 8, 10);
-    ctx.fillRect(x + 25, y + 10, 8, 10);
+    ctx.fillRect(x+7,  y+10, 8, 10);
+    ctx.fillRect(x+25, y+10, 8, 10);
     ctx.fillStyle = '#111';
-    ctx.fillRect(x + 10, y + 13, 4, 6);
-    ctx.fillRect(x + 28, y + 13, 4, 6);
-
-    // ! above head during windup
+    ctx.fillRect(x+10, y+13, 4, 6);
+    ctx.fillRect(x+28, y+13, 4, 6);
     if (this.state === 'WINDUP') {
-      ctx.fillStyle   = '#ffe000';
-      ctx.font        = 'bold 22px monospace';
-      ctx.textAlign   = 'center';
-      ctx.fillText('!', this.x, y - 6);
-      ctx.textAlign   = 'left';
+      ctx.fillStyle = '#ffe000'; ctx.font = 'bold 22px monospace'; ctx.textAlign = 'center';
+      ctx.fillText('!', this.x, y - 6); ctx.textAlign = 'left';
     }
-
     // HP bar
-    const bx = x, by = y - 10, bw = this.w, bh = 4;
-    ctx.fillStyle = '#400';
-    ctx.fillRect(bx, by, bw, bh);
-    ctx.fillStyle = '#e00';
-    ctx.fillRect(bx, by, bw * (this.hp / this.maxHp), bh);
+    ctx.fillStyle = '#400'; ctx.fillRect(x, y-10, this.w, 4);
+    ctx.fillStyle = '#e00'; ctx.fillRect(x, y-10, this.w * (this.hp/this.maxHp), 4);
   }
 }
 
@@ -343,89 +509,57 @@ let player  = makePlayer();
 let enemies = [new Enemy(W * 0.78)];
 let restartConsumed = false;
 
-function restart() {
-  player  = makePlayer();
-  enemies = [new Enemy(W * 0.78)];
-}
+function restart() { player = makePlayer(); enemies = [new Enemy(W * 0.78)]; }
 
-// ─── Collision resolution ─────────────────────────────────────
+// ─── Collision ───────────────────────────────────────────────
 function resolveCollisions() {
   const ar = player.attackRect();
-
-  for (const enemy of enemies) {
-    if (enemy.dead) continue;
-
-    // Player's attack hits enemy
-    if (ar && !player.attackHitSet.has(enemy) && rectsOverlap(ar, enemy.rect())) {
-      enemy.takeDamage(1);
-      player.attackHitSet.add(enemy);
+  for (const e of enemies) {
+    if (e.dead) continue;
+    if (ar && !player.attackHitSet.has(e) && rectsOverlap(ar, e.rect())) {
+      e.takeDamage(1); player.attackHitSet.add(e);
     }
-
-    // Enemy ATTACK lunge hits player (one hit per swing)
-    if (enemy.state === 'ATTACK' && !enemy.hasHitPlayer) {
-      if (rectsOverlap(enemy.rect(), player.rect())) {
-        player.takeDamage(1);
-        enemy.hasHitPlayer = true;
-      }
+    if (e.state === 'ATTACK' && !e.hasHitPlayer && rectsOverlap(e.rect(), player.rect())) {
+      player.takeDamage(1); e.hasHitPlayer = true;
     }
-    if (enemy.state !== 'ATTACK') enemy.hasHitPlayer = false;
+    if (e.state !== 'ATTACK') e.hasHitPlayer = false;
   }
-
-  // Remove dead enemies
   enemies = enemies.filter(e => !e.dead);
 }
 
 // ─── Drawing ─────────────────────────────────────────────────
-function drawBackground() {
+function drawBg() {
   ctx.fillStyle = '#131f13';
   ctx.fillRect(0, 0, W, H);
 }
-
 function drawGround() {
-  ctx.fillStyle = '#2e4a1e';
-  ctx.fillRect(0, GROUND_Y, W, H - GROUND_Y);
-  ctx.fillStyle = '#4e7a2e';
-  ctx.fillRect(0, GROUND_Y, W, 5);
+  ctx.fillStyle = '#2e4a1e'; ctx.fillRect(0, GROUND_Y, W, H - GROUND_Y);
+  ctx.fillStyle = '#4e7a2e'; ctx.fillRect(0, GROUND_Y, W, 5);
 }
-
 function drawHUD() {
-  // HP display
   ctx.fillStyle = 'rgba(0,0,0,0.55)';
-  ctx.fillRect(10, 10, 158, 38);
-
-  const sz = 24, pad = 5;
+  ctx.fillRect(10, 10, 162, 40);
+  const sz = 26, pad = 5;
   for (let i = 0; i < player.maxHp; i++) {
-    const hx = 16 + i * (sz + pad);
-    const hy = 17;
+    const hx = 16 + i * (sz + pad), hy = 17;
     ctx.fillStyle   = i < player.hp ? '#dd2222' : '#2a2a2a';
     ctx.fillRect(hx, hy, sz, sz);
     ctx.strokeStyle = i < player.hp ? '#ff7777' : '#444';
     ctx.lineWidth   = 1.5;
     ctx.strokeRect(hx, hy, sz, sz);
   }
-
-  // Controls
   ctx.fillStyle = 'rgba(0,0,0,0.55)';
-  ctx.fillRect(W - 320, 10, 310, 30);
-  ctx.fillStyle = '#b0d880';
-  ctx.font      = '12px monospace';
-  ctx.fillText('WASD/Arrows = move   W/Up = jump   Space = attack', W - 314, 30);
+  ctx.fillRect(W - 325, 10, 315, 30);
+  ctx.fillStyle = '#b0d880'; ctx.font = '12px monospace';
+  ctx.fillText('WASD/Arrows = move   W/Up = jump   Space = attack', W - 319, 30);
 }
-
 function drawDeathScreen() {
-  ctx.fillStyle = 'rgba(0,0,0,0.70)';
-  ctx.fillRect(0, 0, W, H);
-
+  ctx.fillStyle = 'rgba(0,0,0,0.70)'; ctx.fillRect(0, 0, W, H);
   ctx.textAlign = 'center';
-
-  ctx.fillStyle = '#cc1111';
-  ctx.font      = 'bold 88px monospace';
-  ctx.fillText('YOU DIED', W / 2, H / 2 - 20);
-
-  ctx.fillStyle = '#a0c870';
-  ctx.font      = '26px monospace';
-  ctx.fillText('Press R to try again', W / 2, H / 2 + 50);
-
+  ctx.fillStyle = '#cc1111'; ctx.font = 'bold 88px monospace';
+  ctx.fillText('YOU DIED', W/2, H/2 - 20);
+  ctx.fillStyle = '#a0c870'; ctx.font = '26px monospace';
+  ctx.fillText('Press R to try again', W/2, H/2 + 50);
   ctx.textAlign = 'left';
 }
 
@@ -436,35 +570,27 @@ function loop(ts) {
   const dt = last == null ? 0 : Math.min((ts - last) / 1000, 0.05);
   last = ts;
 
-  const gameOver = player.dead;
-
-  if (!gameOver) {
+  const over = player.dead;
+  if (!over) {
     player.update(dt);
     for (const e of enemies) e.update(dt);
     resolveCollisions();
   }
-
-  // Restart (require releasing R first so it doesn't immediately re-die)
   if (isRestart()) {
-    if (!restartConsumed && gameOver) {
-      restart();
-      restartConsumed = true;
-    }
-  } else {
-    restartConsumed = false;
-  }
+    if (!restartConsumed && over) { restart(); restartConsumed = true; }
+  } else { restartConsumed = false; }
 
-  drawBackground();
+  drawBg();
   drawGround();
   for (const e of enemies) e.draw();
   player.draw();
   drawHUD();
-  if (gameOver) drawDeathScreen();
-
+  if (over) drawDeathScreen();
   requestAnimationFrame(loop);
 }
 
-requestAnimationFrame(loop);
+// Load sprites first (graceful fallback if missing), then start.
+tryLoadSprites(() => requestAnimationFrame(loop));
 </script>
 </body>
 </html>
